@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useMuseumStore } from '@/stores/museum'
 import { useReservationsStore } from '@/stores/reservations'
+import { useClosuresStore } from '@/stores/closures'
 import { guideBusyWindows, hallLoadAt, occupancyGrid } from '@/lib/schedule'
 import { hmOfISO, toMin } from '@/lib/time'
 import CapacityBar from '@/components/CapacityBar.vue'
@@ -10,6 +11,7 @@ import StatusBadge from '@/components/StatusBadge.vue'
 
 const museum = useMuseumStore()
 const store = useReservationsStore()
+const closures = useClosuresStore()
 
 const grid = computed(() =>
   occupancyGrid(store.list, { maintenance: museum.maintenance, extraLoad: museum.extraLoad }),
@@ -81,6 +83,15 @@ const suggestions = computed(() => {
 </script>
 
 <template>
+  <!-- 临时闭展横幅 -->
+  <div v-if="closures.active.length" class="callout danger" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+    <strong>🚨 临时闭展 {{ closures.active.length }} 起：</strong>
+    <span v-for="inc in closures.active" :key="inc.id" class="small">
+      「{{ museum.hallById(inc.hallId)?.name }}」{{ inc.reason }}（{{ inc.start }}-{{ inc.end }}）
+    </span>
+    <RouterLink to="/closure" class="btn-sm btn-gold" style="margin-left:auto">前往闭展分流中心处置 ▸</RouterLink>
+  </div>
+
   <!-- 指标卡 -->
   <div class="grid grid-4" style="margin-bottom:14px">
     <div class="card tight"><div class="stat-label">今日预约团体</div><div class="stat-num">{{ todayList.length }}</div>

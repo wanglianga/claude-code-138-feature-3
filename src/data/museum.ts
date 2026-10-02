@@ -243,3 +243,7 @@ export const LOST_FEE = 200
 export const MAX_GROUP_SIZE = 60
 export const LARGE_GROUP_SIZE = 35
 export const TOUR_INTERVAL_MIN = 10 // 同展厅相邻团队建议间隔
+
+/** 团体票单价（元/人），闭展部分退款按「未参观时长占比 × 人数 × 单价」估算，封顶 50% */
+export const GROUP_TICKET_PRICE = 40
+export const REFUND_MAX_RATIO = 0.5

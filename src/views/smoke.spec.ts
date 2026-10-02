@@ -8,6 +8,8 @@ import ReservationsView from '@/views/ReservationsView.vue'
 import ConfirmView from '@/views/ConfirmView.vue'
 import FrontDeskView from '@/views/FrontDeskView.vue'
 import DispatchView from '@/views/DispatchView.vue'
+import ClosureView from '@/views/ClosureView.vue'
+import GuideView from '@/views/GuideView.vue'
 import CheckoutView from '@/views/CheckoutView.vue'
 import TraceView from '@/views/TraceView.vue'
 import OpsView from '@/views/OpsView.vue'
@@ -34,7 +36,7 @@ function mountView(component: unknown) {
   })
 }
 
-describe('八大业务视图挂载冒烟', () => {
+describe('十大业务视图挂载冒烟', () => {
   beforeEach(() => {
     localStorage.clear()
     setActivePinia(createPinia())
@@ -99,5 +101,24 @@ describe('八大业务视图挂载冒烟', () => {
     expect(w.text()).toContain('晨光职业学校')
     expect(w.text()).toContain('讲解缩水')
     expect(w.text()).toContain('完整操作时间线')
+  })
+
+  it('闭展分流中心渲染登记、复盘与种子事件统计', () => {
+    const w = mountView(ClosureView)
+    expect(w.text()).toContain('登记临时闭展')
+    expect(w.text()).toContain('闭展事件')
+    expect(w.text()).toContain('运营复盘')
+    expect(w.text()).toContain('恒温恒湿机组故障') // 种子闭展事件
+    expect(w.text()).toContain('被改线团队投诉率')
+    expect(w.text()).toContain('预警说明')
+  })
+
+  it('讲解员端渲染讲解重点与带团任务', () => {
+    const w = mountView(GuideView)
+    expect(w.text()).toContain('讲解重点同步')
+    expect(w.text()).toContain('擅长主题')
+    // 默认首位讲解员林岚带远瞻科技团
+    expect(w.text()).toContain('远瞻科技')
+    expect(w.text()).toContain('重点讲解')
   })
 })

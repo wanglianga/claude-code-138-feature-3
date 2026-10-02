@@ -1,5 +1,5 @@
 import { HEADSET_DEPOSIT, HALLS, TODAY } from '@/data/museum'
-import type { DeviceUnit, Reservation, RouteStop, TimelineEvent } from '@/types'
+import type { ClosureIncident, DeviceUnit, DiversionRecord, Reservation, RouteStop, TimelineEvent } from '@/types'
 
 export function iso(hm: string, day = TODAY): string {
   return `${day}T${hm}:00`
@@ -302,9 +302,18 @@ export function seedReservations(): Reservation[] {
         }),
         ev('batch_admit', 'B0830 批次入馆', '08:38', { by: '安检员' }),
         ev('start_tour', '近现代书画线开始讲解', '08:40', { by: '何田田' }),
+        ev('closure_notice', '闭展分流通知已发送联系人', '09:12', {
+          by: '前台主管 沈姐',
+          detail:
+            '【云川美术馆】因「二号厅 · 近现代名家」恒温恒湿机组故障报警（设备故障），09:10-09:50 临时闭展，贵团行程将调整，替代方案与等待时间请与前台确认。',
+        }),
         ev('hall_congestion', '二号厅散客激增（在场约 44/45），启动分流', '09:20', {
           by: '苏晓',
           detail: '二号厅压缩停留至 20 分钟，提前转入四号厅。',
+        }),
+        ev('diversion', '闭展分流：接受替代路线，二号厅 → 四号厅', '09:35', {
+          by: '前台主管 沈姐',
+          detail: '二号厅设备故障临时闭展，团队接受替代路线，后续站点顺延。',
         }),
         ev('reroute', '路线调整：二号厅 → 四号厅（提前 5 分钟）', '09:35', { by: '何田田' }),
         ev('device_return', '归还耳麦 16 台，HS-036 耳罩开裂', '10:04', {
@@ -329,6 +338,44 @@ export function seedHeadsets(): DeviceUnit[] {
   const pool = makeHeadsets(120)
   applySeedHeadsets(pool)
   return pool
+}
+
+/**
+ * 预置闭展事件：二号厅 09:10-09:50 设备故障（已恢复），
+ * 晨光职校（R20261001-05）被改线至四号厅，用于演示运营复盘（投诉率/满意度/展厅预警）。
+ */
+export function seedClosures(): { incidents: ClosureIncident[]; records: DiversionRecord[] } {
+  return {
+    incidents: [
+      {
+        id: 'INC-SEED-01',
+        hallId: 'h2',
+        start: '09:10',
+        end: '09:50',
+        reason: '恒温恒湿机组故障报警，限流关闭',
+        category: 'equipment',
+        status: 'resolved',
+        createdAt: iso('09:10'),
+        createdBy: '工程部 老周',
+        resolvedAt: iso('09:50'),
+      },
+    ],
+    records: [
+      {
+        id: 'DIV-SEED-01',
+        incidentId: 'INC-SEED-01',
+        resId: 'R20261001-05',
+        status: 'done',
+        notifiedAt: iso('09:12'),
+        notifyBy: '前台主管 沈姐',
+        decision: 'accept_alt',
+        altHallId: 'h4',
+        handledBy: '前台主管 沈姐',
+        handledAt: iso('09:35'),
+        guideAckAt: iso('09:36'),
+      },
+    ],
+  }
 }
 
 export const ALL_HALL_IDS = HALLS.map((h) => h.id)

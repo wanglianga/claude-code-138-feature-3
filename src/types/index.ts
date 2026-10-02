@@ -81,6 +81,12 @@ export type EventKind =
   | 'satisfaction'
   | 'complete'
   | 'complaint'
+  | 'closure_notice' // 闭展分流通知已发送联系人
+  | 'diversion' // 闭展分流处置（改道/等待恢复）
+  | 'theme_switch' // 闭展后更换讲解主题
+  | 'refund' // 部分退款
+  | 'reschedule' // 改期
+  | 'guide_ack' // 讲解员已同步新讲解重点
 
 export interface TimelineEvent {
   id: string
@@ -159,6 +165,10 @@ export interface Reservation {
   complaint?: string
   complaintReply?: string
 
+  // —— 闭展分流 ——
+  refundTotal?: number // 部分退款累计（元）
+  rescheduleOf?: string // 由哪条预约改期而来
+
   timeline: TimelineEvent[]
 }
 
@@ -218,4 +228,72 @@ export interface SecurityLane {
   name: string
   perSlot: number // 每 15 分钟可检人数
   accessibleOnly?: boolean
+}
+
+/* ---------------- 展厅临时闭展分流 ---------------- */
+
+export type ClosureCategory = 'equipment' | 'exhibit' | 'safety' | 'environment' | 'other'
+
+export const CLOSURE_CATEGORY_LABEL: Record<ClosureCategory, string> = {
+  equipment: '设备故障',
+  exhibit: '展品保护',
+  safety: '安全疏导',
+  environment: '环境异常',
+  other: '其他原因',
+}
+
+/** 展厅临时闭展事件（闭展原因进入运营复盘） */
+export interface ClosureIncident {
+  id: string
+  hallId: string
+  start: string // HH:mm
+  end: string
+  reason: string
+  category: ClosureCategory
+  status: 'active' | 'resolved' // 闭展中 / 已恢复开放
+  createdAt: string // ISO
+  createdBy: string
+  resolvedAt?: string
+  /** 运营复盘结论 */
+  review?: string
+  reviewedBy?: string
+  reviewedAt?: string
+}
+
+export type DiversionDecision =
+  | 'accept_alt' // 接受替代路线
+  | 'theme_switch' // 更换讲解主题
+  | 'wait_reopen' // 等待恢复开放
+  | 'refund' // 拒绝替代路线 → 部分退款
+  | 'reschedule' // 拒绝替代路线 → 改期
+  | 'complaint' // 拒绝替代路线 → 投诉登记
+
+export const DIVERSION_DECISION_LABEL: Record<DiversionDecision, string> = {
+  accept_alt: '接受替代路线',
+  theme_switch: '更换讲解主题',
+  wait_reopen: '等待恢复开放',
+  refund: '部分退款',
+  reschedule: '改期',
+  complaint: '投诉登记',
+}
+
+/** 受影响团队的分流处置记录（一个团队在一个闭展事件中一条） */
+export interface DiversionRecord {
+  id: string
+  incidentId: string
+  resId: string
+  status: 'pending' | 'notified' | 'done' // 待通知 / 已通知 / 已处置
+  notifiedAt?: string
+  notifyBy?: string
+  decision?: DiversionDecision
+  altHallId?: string // 替代展厅
+  altThemeId?: string // 更换后的讲解主题
+  waitMin?: number // 预计等待分钟
+  refundAmount?: number // 部分退款金额
+  rescheduleTo?: string // 改期后的到馆时间 ISO
+  newResId?: string // 改期生成的新预约
+  complaintText?: string
+  handledBy?: string
+  handledAt?: string
+  guideAckAt?: string // 讲解员已同步新讲解重点
 }

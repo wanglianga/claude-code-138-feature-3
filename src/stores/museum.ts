@@ -21,6 +21,8 @@ interface MuseumState {
   maintenance: Record<string, HallClosure>
   /** 散客实时占用录入 */
   extraLoad: Record<string, number>
+  /** 运营复盘后为展厅挂上的预警说明：hallId -> 文案 */
+  hallWarnings: Record<string, string>
   nowHM: string
   running: boolean
 }
@@ -37,6 +39,7 @@ export const useMuseumStore = defineStore('museum', {
     depositPerUnit: HEADSET_DEPOSIT,
     maintenance: {},
     extraLoad: { h2: 28, h5: 10 },
+    hallWarnings: {},
     nowHM: '10:25',
     running: false,
   }),
@@ -89,6 +92,16 @@ export const useMuseumStore = defineStore('museum', {
       else delete this.extraLoad[hallId]
     },
 
+    /** 运营复盘结论：为展厅增加/更新/清除预警说明 */
+    setHallWarning(hallId: string, text: string) {
+      const t = text.trim()
+      if (t) this.hallWarnings[hallId] = t
+      else delete this.hallWarnings[hallId]
+    },
+    clearHallWarning(hallId: string) {
+      delete this.hallWarnings[hallId]
+    },
+
     /** 从在库设备中取 n 台，返回设备编码（不足时返回全部可用） */
     lendFromPool(n: number, resId: string, atISO: string): DeviceUnit[] {
       const picked: DeviceUnit[] = []
@@ -134,6 +147,7 @@ export const useMuseumStore = defineStore('museum', {
         headsets: seedHeadsets(),
         maintenance: {},
         extraLoad: { h2: 28, h5: 10 },
+        hallWarnings: {},
         nowHM: hmOfISO('2026-10-01T10:25:00'),
       })
     },
@@ -141,6 +155,6 @@ export const useMuseumStore = defineStore('museum', {
 
   persist: {
     key: 'museum-world',
-    pick: ['maintenance', 'extraLoad', 'nowHM', 'headsets'],
+    pick: ['maintenance', 'extraLoad', 'hallWarnings', 'nowHM', 'headsets'],
   },
 })

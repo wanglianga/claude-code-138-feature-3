@@ -10,11 +10,13 @@ const museum = useMuseumStore()
 const closure = computed(() => closureAt(props.hall, museum.nowHM, museum.maintenance))
 const noPhoto = computed(() => props.hall.exhibits.some((e) => e.noPhoto))
 const hot = computed(() => props.hall.exhibits.some((e) => e.hot))
+const warning = computed(() => museum.hallWarnings[props.hall.id])
 </script>
 
 <template>
   <span class="pill-row" style="display:inline-flex">
     <span v-if="closure" class="tag tag-maint">🛠 {{ closure.reason }} {{ closure.start }}-{{ closure.end }}</span>
+    <span v-if="warning" class="tag tag-warn" :title="warning">⚠ 预警：{{ warning }}</span>
     <span v-if="hall.childFriendly" class="tag tag-kid">🧒 儿童友好</span>
     <span v-if="!hall.accessible" class="tag tag-acc">⚠ 无无障碍通道</span>
     <span v-else class="tag tag-acc">♿ 无障碍可达</span>

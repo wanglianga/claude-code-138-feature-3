@@ -337,6 +337,235 @@ export const useReservationsStore = defineStore('reservations', {
       )
     },
 
+    // ---------- 展厅临时闭展分流 ----------
+    /** 批量/单个通知：闭展分流通知写入预约时间线 */
+    notifyClosure(id: string, message: string, by: string) {
+      const r = this.byId(id)
+      if (!r) return
+      this.log(r, 'closure_notice', '闭展分流通知已发送联系人', useMuseumStore().nowISO, by, {
+        detail: message,
+      })
+    },
+
+    /** 把某团经过闭展厅的未完成的站点标记为临时维护（投诉登记等终态处理用） */
+    markClosedStop(id: string, hallId: string, note: string) {
+      const r = this.byId(id)
+      const museum = useMuseumStore()
+      if (!r) return
+      for (const s of r.route) {
+        if (s.hallId !== hallId || s.state === 'done' || s.state === 'skipped') continue
+        if (s.state === 'current') s.actualLeave = museum.nowHM
+        s.state = 'maintenance'
+        s.note = note
+      }
+      this.refreshDuration(r)
+    },
+
+    /**
+     * 闭展分流 · 接受替代路线：在受阻站点位置插入替代展厅。
+     * 与途中改道不同：未到馆团队的替代站保持 planned，按原计划时刻进场。
+     */
+    divertFromClosedHall(
+      id: string,
+      payload: { closedHallId: string; targetHallId: string; atHM: string; durationMin: number; reason: string },
+      by: string,
+    ) {
+      const r = this.byId(id)
+      const museum = useMuseumStore()
+      if (!r) return
+      const idx = r.route.findIndex(
+        (s) => s.hallId === payload.closedHallId && s.state !== 'done' && s.state !== 'skipped',
+      )
+      const blocked = idx >= 0 ? r.route[idx] : undefined
+      const inHall = blocked?.state === 'current'
+      if (blocked) {
+        if (inHall) blocked.actualLeave = payload.atHM
+        blocked.state = 'maintenance'
+        blocked.note = `${blocked.note ?? ''} 闭展改道：${payload.reason}`.trim()
+      }
+      const enterHM = inHall
+        ? payload.atHM
+        : blocked && blocked.plannedEnter > payload.atHM
+          ? blocked.plannedEnter
+          : payload.atHM
+      const target = museum.hallById(payload.targetHallId)!
+      const fresh: RouteStop = {
+        hallId: payload.targetHallId,
+        plannedEnter: enterHM,
+        plannedLeave: addHM(enterHM, payload.durationMin),
+        durationMin: payload.durationMin,
+        state: inHall ? 'current' : 'planned',
+        actualEnter: inHall ? payload.atHM : undefined,
+        note: `闭展替代展厅：${payload.reason}`,
+      }
+      const insertAt = idx >= 0 ? idx : r.route.length
+      r.route.splice(insertAt, 0, fresh)
+      // 后续计划站顺延
+      let cursor = fresh.plannedLeave
+      for (let i = insertAt + 1; i < r.route.length; i++) {
+        const s = r.route[i]
+        if (s.actualEnter || s.state === 'skipped' || s.state === 'maintenance') continue
+        s.state = 'planned'
+        s.plannedEnter = addHM(cursor, 5)
+        s.plannedLeave = addHM(s.plannedEnter, s.durationMin)
+        cursor = s.plannedLeave
+      }
+      this.refreshDuration(r)
+      this.log(
+        r,
+        'diversion',
+        `闭展分流：${museum.hallById(payload.closedHallId)?.name ?? '原站'} → ${target.name}`,
+        museum.nowISO,
+        by,
+        { detail: `${payload.reason}；团队接受替代路线，后续站点已联动顺延。` },
+      )
+    },
+
+    /** 闭展分流 · 等待恢复开放：受影响站点顺延到恢复时刻，后续站联动 */
+    waitForReopen(id: string, hallId: string, reopenHM: string, waitMin: number, by: string) {
+      const r = this.byId(id)
+      const museum = useMuseumStore()
+      if (!r) return
+      const idx = r.route.findIndex(
+        (s) => s.hallId === hallId && s.state !== 'done' && s.state !== 'skipped',
+      )
+      if (idx < 0) return
+      const stop = r.route[idx]
+      if (stop.state === 'current') {
+        // 在厅团队先离厅等候，恢复后重新进场
+        stop.actualLeave = museum.nowHM
+        stop.actualEnter = undefined
+        stop.state = 'planned'
+      }
+      stop.plannedEnter = addHM(reopenHM, 5)
+      stop.plannedLeave = addHM(stop.plannedEnter, stop.durationMin)
+      stop.note = `展厅临时闭展，团队选择等待恢复（预计等待 ${waitMin} 分钟），已顺延至 ${stop.plannedEnter}`
+      let cursor = stop.plannedLeave
+      for (let i = idx + 1; i < r.route.length; i++) {
+        const s = r.route[i]
+        if (s.actualEnter || s.state === 'skipped' || s.state === 'maintenance') continue
+        s.plannedEnter = addHM(cursor, 5)
+        s.plannedLeave = addHM(s.plannedEnter, s.durationMin)
+        cursor = s.plannedLeave
+      }
+      this.refreshDuration(r)
+      this.log(
+        r,
+        'diversion',
+        `闭展分流：等待「${museum.hallById(hallId)?.name}」恢复开放（约 ${waitMin} 分钟）`,
+        museum.nowISO,
+        by,
+        { detail: `受影响站点顺延至 ${stop.plannedEnter} 进场，后续站点已联动顺延。` },
+      )
+    },
+
+    /** 闭展分流 · 更换讲解主题：保留已完成/进行中站点，未完成站点按新主题重排 */
+    switchTheme(id: string, newThemeId: string, reason: string, by: string) {
+      const r = this.byId(id)
+      const museum = useMuseumStore()
+      if (!r) return
+      const theme = museum.themeById(newThemeId)
+      if (!theme) return
+      const oldTheme = museum.themeById(r.themeId)
+      const current = r.route.find((s) => s.state === 'current')
+      const visited = new Set(
+        r.route
+          .filter((s) => s.state === 'done' || s.state === 'current' || s.state === 'maintenance')
+          .map((s) => s.hallId),
+      )
+      const startHM = current
+        ? addHM(current.plannedLeave > museum.nowHM ? current.plannedLeave : museum.nowHM, 5)
+        : (r.route.find((s) => s.state === 'planned')?.plannedEnter ?? addHM(museum.nowHM, 10))
+      const built = buildRoute(theme, museum.halls, startHM, {
+        accessible: r.accessible,
+        live: museum.maintenance,
+      }).filter((s) => !visited.has(s.hallId))
+      // 保留已完成/进行中/闭展终止的站点作为历史，未完成站点按新主题重排
+      const kept = r.route.filter(
+        (s) => s.state === 'done' || s.state === 'current' || s.state === 'maintenance',
+      )
+      const dropped = r.route.length - kept.length
+      r.route = [...kept, ...built]
+      r.themeId = newThemeId
+      this.refreshDuration(r)
+      this.log(
+        r,
+        'theme_switch',
+        `讲解主题变更：${oldTheme?.name ?? '—'} → ${theme.name}`,
+        museum.nowISO,
+        by,
+        { detail: `${reason}；未完成站点已按新主题重排（原 ${dropped} 个站点替换为 ${built.length} 个）。` },
+      )
+    },
+
+    /** 闭展分流 · 拒绝替代路线 → 部分退款：闭展站点终止参观，累计退款金额 */
+    applyRefund(id: string, hallId: string, amount: number, reason: string, by: string) {
+      const r = this.byId(id)
+      const museum = useMuseumStore()
+      if (!r || amount <= 0) return
+      this.markClosedStop(id, hallId, `闭展放弃参观，已办理部分退款 ¥${amount}。${reason}`)
+      r.refundTotal = (r.refundTotal ?? 0) + amount
+      this.log(r, 'refund', `部分退款 ¥${amount.toLocaleString()}`, museum.nowISO, by, {
+        amount,
+        detail: reason,
+      })
+    },
+
+    /** 闭展分流 · 拒绝替代路线 → 改期：原预约取消，按原信息生成新日期预约 */
+    reschedule(id: string, newArriveISO: string, by: string): Reservation | null {
+      const r = this.byId(id)
+      const museum = useMuseumStore()
+      if (!r || ['completed', 'cancelled'].includes(r.status)) return null
+      this.log(
+        r,
+        'reschedule',
+        `团队改期至 ${newArriveISO.slice(0, 10)} ${hmOfISO(newArriveISO)}`,
+        museum.nowISO,
+        by,
+        { detail: '展厅临时闭展，团队拒绝替代路线，办理改期；原预约终止。' },
+      )
+      r.status = 'cancelled'
+      const theme = museum.themeById(r.themeId)
+      const route = theme
+        ? buildRoute(theme, museum.halls, addHM(hmOfISO(newArriveISO), 10), {
+            accessible: r.accessible,
+          })
+        : []
+      const seq = String(this.list.length + 1).padStart(2, '0')
+      const nr: Reservation = {
+        ...r,
+        id: `R20261001-${seq}`,
+        arriveTime: newArriveISO,
+        status: 'submitted',
+        createdAt: museum.nowISO,
+        confirmedAt: undefined,
+        confirmNote: undefined,
+        assignedGuideIds: [],
+        batchNo: undefined,
+        securityLane: undefined,
+        actualArrive: undefined,
+        verifiedSize: undefined,
+        route,
+        durationMin: plannedDuration(route),
+        devices: [],
+        depositTotal: 0,
+        depositDeduction: 0,
+        departAt: undefined,
+        satisfaction: undefined,
+        complaint: undefined,
+        complaintReply: undefined,
+        refundTotal: undefined,
+        rescheduleOf: r.id,
+        timeline: [],
+      }
+      while (this.list.some((x) => x.id === nr.id)) nr.id = `${nr.id}X`
+      this.log(nr, 'submit', `改期预约已生成（原 ${r.id}）`, museum.nowISO, by, {
+        detail: `${r.orgName} ${r.groupSize} 人，改期至 ${newArriveISO.slice(0, 10)} ${hmOfISO(newArriveISO)} 到馆，待馆方确认。`,
+      })
+      this.list.unshift(nr)
+      return nr
+    },
+
     /** 讲解员临时替换 */
     swapGuide(id: string, oldGuideId: string, newGuideId: string, reason: string) {
       const r = this.byId(id)

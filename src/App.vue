@@ -12,6 +12,8 @@ const nav = [
   { to: '/confirm', icon: '✅', label: '预约确认台' },
   { to: '/front', icon: '🏷', label: '到馆前台' },
   { to: '/dispatch', icon: '🔀', label: '途中分流调度' },
+  { to: '/closure', icon: '🚨', label: '闭展分流中心' },
+  { to: '/guide', icon: '🎤', label: '讲解员端' },
   { to: '/checkout', icon: '🎧', label: '离馆核销' },
   { to: '/trace', icon: '🔎', label: '投诉与追溯' },
 ]
@@ -20,6 +22,7 @@ function resetDemo() {
   if (confirm('将清空当前所有操作并恢复演示数据，确定吗？')) {
     localStorage.removeItem('museum-reservations')
     localStorage.removeItem('museum-world')
+    localStorage.removeItem('museum-closures')
     location.reload()
   }
 }
