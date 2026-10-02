@@ -1,4 +1,5 @@
 import type {
+  ClosureIncident,
   Guide,
   Hall,
   HallClosure,
@@ -125,7 +126,7 @@ export function guideBusyWindows(
   const out: { start: number; end: number; reservation: Reservation }[] = []
   for (const r of reservations) {
     if (!r.assignedGuideIds.includes(guideId)) continue
-    if (r.status === 'rejected' || r.status === 'cancelled' || r.status === 'completed') continue
+    if (r.status === 'rejected' || r.status === 'cancelled' || r.status === 'completed' || r.status === 'rescheduled') continue
     const active = r.route.filter((s) => s.state !== 'skipped' && s.state !== 'maintenance')
     if (!active.length) continue
     const first = active[0]
@@ -412,4 +413,184 @@ export function plannedDuration(stops: RouteStop[]): number {
   const first = active[0]
   const last = active[active.length - 1]
   return durationHM(first.plannedEnter, last.plannedLeave)
+}
+
+/* ============================================================
+   临时闭展分流（设备故障）
+   ============================================================ */
+
+/** 闭展时段与某站点（有效窗口）是否重叠 */
+export function stopHitsClosure(stop: RouteStop, start: string, end: string): boolean {
+  if (stop.state === 'done' || stop.state === 'skipped') return false
+  const w = effectiveWindow(stop)
+  return overlap(toMin(w.enter), toMin(w.leave), toMin(start), toMin(end))
+}
+
+/** 从当日预约中筛出路线经过闭展厅且时段重叠的团队（已确认/已到馆/参观中） */
+export function affectedByClosure(
+  reservations: Reservation[],
+  hallId: string,
+  start: string,
+  end: string,
+): Reservation[] {
+  return reservations
+    .filter((r) => OCCUPYING_STATUSES.includes(r.status as (typeof OCCUPYING_STATUSES)[number]))
+    .filter((r) => r.route.some((s) => s.hallId === hallId && stopHitsClosure(s, start, end)))
+}
+
+/** 等待闭展结束复开的分钟数（团队到达受阻站起算）；为负表示当前已在闭展时段内 */
+export function closureWaitMin(stop: RouteStop, endHM: string, nowHM: string): number {
+  const arriveAt = stop.state === 'current' || stop.actualEnter ? nowHM : stop.plannedEnter
+  return Math.max(0, toMin(endHM) - toMin(arriveAt))
+}
+
+/**
+ * 是否值得等待复开后补看：复开后仍能在当日完成该站与后续动线
+ * （闭展结束不晚于该站计划离开 60 分钟，且不超过 17:30 当日讲解截止）
+ */
+export function canCatchUpAfterReopen(stop: RouteStop, endHM: string): boolean {
+  const reopen = toMin(endHM)
+  return reopen <= toMin(stop.plannedLeave) + 60 && reopen <= 17 * 60 + 30
+}
+
+/**
+ * 可换讲解主题候选：
+ * 当前讲解员能讲（语言/主题资质）、不含闭展厅、且与团队年龄/无障碍不冲突
+ */
+export function switchableThemes(
+  reservation: Reservation,
+  closedHallId: string,
+  themes: Theme[],
+  halls: Hall[],
+  guides: Guide[],
+): Theme[] {
+  const myGuides = reservation.assignedGuideIds
+    .map((id) => guides.find((g) => g.id === id))
+    .filter((g): g is Guide => !!g)
+  return themes.filter((t) => {
+    if (t.id === reservation.themeId) return false
+    if (t.hallIds.includes(closedHallId)) return false
+    // 至少一名本团讲解员具备该主题资质
+    if (!myGuides.some((g) => g.themes.includes(t.id))) return false
+    // 无障碍团：主题所有展厅均需可达
+    if (reservation.accessible && t.hallIds.some((id) => halls.find((h) => h.id === id)?.accessible === false))
+      return false
+    return true
+  })
+}
+
+export interface ClosureAlternative {
+  reservation: Reservation
+  stop: RouteStop
+  waitMin: number
+  catchUp: boolean
+  suggestions: RerouteCandidate[]
+  altThemes: Theme[]
+}
+
+export interface ClosureContext {
+  startHM: string
+  expectEndHM: string
+  halls: Hall[]
+  themes: Theme[]
+  guides: Guide[]
+  grid: Map<string, Map<number, number>>
+  live: LiveState
+  nowHM: string
+}
+
+/** 为单个受影响团队计算：等待时长、替代路线建议、可换主题 */
+export function closureAlternative(r: Reservation, hallId: string, ctx: ClosureContext): ClosureAlternative | null {
+  const stop = r.route.find((s) => s.hallId === hallId && stopHitsClosure(s, ctx.startHM, ctx.expectEndHM))
+  if (!stop) return null
+  const suggestions = suggestReroute(
+    r,
+    hallId,
+    ctx.halls,
+    ctx.grid,
+    ctx.live,
+    ctx.nowHM,
+  )
+  return {
+    reservation: r,
+    stop,
+    waitMin: closureWaitMin(stop, ctx.expectEndHM, ctx.nowHM),
+    catchUp: canCatchUpAfterReopen(stop, ctx.expectEndHM),
+    suggestions,
+    altThemes: switchableThemes(r, hallId, ctx.themes, ctx.halls, ctx.guides),
+  }
+}
+
+/** 生成讲解员端的新讲解重点 */
+export function briefingPoints(
+  hall: Hall,
+  reason: string,
+  target: Hall | undefined,
+  reservation: Reservation,
+  altTheme: Theme | undefined,
+): string[] {
+  const pts: string[] = []
+  pts.push(`「${hall.name}」因${reason}临时关闭，抵达前请先向团队说明并致歉，避免聚集等候。`)
+  if (target) {
+    const hot = target.exhibits.filter((e) => e.hot).map((e) => e.name)
+    const noPhoto = target.exhibits.some((e) => e.noPhoto)
+    pts.push(`替代展厅「${target.name}」重点讲解：${hot.length ? hot.join('、') : target.exhibits.map((e) => e.name).join('、')}，建议停留 ${reservation.route.find((s) => s.hallId === target.id)?.durationMin ?? 20} 分钟。`)
+    if (noPhoto) pts.push(`替代展厅含禁拍展品，入场前务必提醒收起手机与相机。`)
+    if (reservation.ageBand === 'children' && !target.childFriendly)
+      pts.push('本团为儿童团，替代展厅非儿童友好，请放慢节奏、降低专业术语密度。')
+    if (target.quiet === 3) pts.push('替代展厅需保持安静，请提前提示团队放轻脚步、耳麦音量调低。')
+  }
+  if (altTheme) pts.push(`讲解主题切换为「${altTheme.name}」：${altTheme.desc}；按新主题动线组织剩余展厅。`)
+  pts.push('如团员追问原展厅，统一口径：设备故障抢修中，馆方将视情况安排改期或部分退款。')
+  return pts
+}
+
+export interface ClosureReview {
+  incidentId: string
+  affected: number
+  rerouted: number // 接受替代路线/换主题
+  refused: number
+  refunded: number
+  rescheduled: number
+  complaintRegistered: number
+  /** 被改线（受影响且已离馆反馈）团队 */
+  feedbackCount: number
+  complaintRate: number // 0-1
+  avgSatisfaction: number | null
+  refundTotal: number
+}
+
+/** 闭展结束后复盘：被改线团队的投诉率、满意度与退款 */
+export function closureReview(incident: ClosureIncident, reservations: Reservation[]): ClosureReview {
+  const plans = Object.values(incident.plans)
+  const affectedRes = reservations.filter((r) => incident.plans[r.id])
+  const feedback = affectedRes.filter((r) => r.departAt)
+  const sum: ClosureReview = {
+    incidentId: incident.id,
+    affected: plans.length,
+    rerouted: plans.filter((p) => p.status === 'rerouted').length,
+    refused: plans.filter((p) => ['refunded', 'rescheduled', 'complaint'].includes(p.status)).length,
+    refunded: plans.filter((p) => p.status === 'refunded').length,
+    rescheduled: plans.filter((p) => p.status === 'rescheduled').length,
+    complaintRegistered: plans.filter((p) => p.status === 'complaint').length,
+    feedbackCount: feedback.length,
+    complaintRate: 0,
+    avgSatisfaction: null,
+    refundTotal: reservations.reduce(
+      (n, r) => n + (r.refunds?.filter((x) => x.incidentId === incident.id).reduce((s, x) => s + x.amount, 0) ?? 0),
+      0,
+    ),
+  }
+  // 投诉率：被改线团队中已登记投诉（含闭展投诉单与团档案投诉）的占比
+  const withComplaint = feedback.filter((r) => r.complaint).length
+  sum.complaintRate = feedback.length ? withComplaint / feedback.length : 0
+  const sats = feedback.map((r) => r.satisfaction).filter((x): x is number => !!x)
+  sum.avgSatisfaction = sats.length ? sats.reduce((a, b) => a + b, 0) / sats.length : null
+  return sum
+}
+
+/** 复盘结论：是否建议给该展厅增加预警说明 */
+export function shouldAddWarning(review: ClosureReview): boolean {
+  if (review.affected === 0) return false
+  return review.complaintRate >= 0.25 || (review.avgSatisfaction !== null && review.avgSatisfaction <= 3.5)
 }

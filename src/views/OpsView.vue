@@ -2,15 +2,22 @@
 import { computed } from 'vue'
 import { useMuseumStore } from '@/stores/museum'
 import { useReservationsStore } from '@/stores/reservations'
-import { guideBusyWindows, hallLoadAt, occupancyGrid } from '@/lib/schedule'
+import {
+  closureReview,
+  guideBusyWindows,
+  hallLoadAt,
+  occupancyGrid,
+  shouldAddWarning,
+} from '@/lib/schedule'
 import { hmOfISO, toMin } from '@/lib/time'
 import CapacityBar from '@/components/CapacityBar.vue'
 import HallTags from '@/components/HallTags.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
+import { useSessionStore } from '@/stores/session'
 
 const museum = useMuseumStore()
 const store = useReservationsStore()
-
+const session = useSessionStore()
 const grid = computed(() =>
   occupancyGrid(store.list, { maintenance: museum.maintenance, extraLoad: museum.extraLoad }),
 )
@@ -78,6 +85,36 @@ const suggestions = computed(() => {
   if (!out.length) out.push({ level: 'ok', text: '当前各展厅负载、排班与设备状态平稳，维持现有大团与限流规则。' })
   return out
 })
+
+// ---------- 临时闭展复盘 ----------
+const closureRows = computed(() =>
+  [...museum.incidents]
+    .sort((a, b) => b.declaredAt.localeCompare(a.declaredAt))
+    .map((inc) => ({ inc, review: closureReview(inc, store.list), suggest: shouldAddWarning(closureReview(inc, store.list)) })),
+)
+function warningOn(incidentId: string) {
+  const inc = museum.incidentById(incidentId)
+  return inc ? !!museum.warningByHall(inc.hallId) : false
+}
+function addWarning(incidentId: string) {
+  const inc = museum.incidentById(incidentId)
+  if (!inc) return
+  const rv = closureReview(inc, store.list)
+  museum.setWarning({
+    hallId: inc.hallId,
+    incidentId,
+    setAt: museum.nowISO,
+    by: session.staffName,
+    text: `本厅近期因${inc.reason}临时闭展：被改线团队投诉率 ${Math.round(rv.complaintRate * 100)}%、满意度 ${rv.avgSatisfaction?.toFixed(1) ?? '—'}，预约前请注意可能的临时调整。`,
+  })
+}
+function removeWarning(incidentId: string) {
+  const inc = museum.incidentById(incidentId)
+  if (inc) museum.clearWarning(inc.hallId)
+}
+function saveReviewNote(incidentId: string, note: string) {
+  store.reviewClosure(incidentId, note)
+}
 </script>
 
 <template>
@@ -173,5 +210,75 @@ const suggestions = computed(() => {
         </tbody>
       </table>
     </div>
+  </div>
+
+  <!-- ============ 临时闭展分流复盘 ============ -->
+  <div class="card" style="margin-top:14px">
+    <div class="card-title">
+      临时闭展分流与运营复盘
+      <span class="aside">被改线团队投诉率 · 满意度 · 退款 · 是否增加展厅预警</span>
+    </div>
+    <div v-if="!closureRows.length" class="empty small">当日暂无临时闭展事件。</div>
+    <table v-else class="data">
+      <thead>
+        <tr>
+          <th>闭展事件</th><th>状态 / 时段</th><th>受影响</th><th>接受改线 / 拒绝</th>
+          <th>投诉率（已反馈）</th><th>满意度均值</th><th>退款合计</th><th>预警决策</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="row in closureRows" :key="row.inc.id">
+          <td>
+            <strong style="font-size:13px">{{ museum.hallById(row.inc.hallId)?.name }}</strong>
+            <div class="small muted">{{ row.inc.reason }}</div>
+            <div class="small muted">登记 {{ row.inc.declaredBy }}</div>
+          </td>
+          <td class="small">
+            <span class="tag" :class="row.inc.status === 'active' ? 'tag-maint' : 'tag-ok'">
+              {{ row.inc.status === 'active' ? '闭展中' : '已结束' }}
+            </span>
+            <div class="mono muted" style="margin-top:3px">{{ row.inc.start }}-{{ row.inc.end || '…' }}</div>
+          </td>
+          <td class="mono">{{ row.review.affected }} 团</td>
+          <td class="small">
+            <span style="color:var(--green)">{{ row.review.rerouted }} 接受</span>
+            / <span style="color:var(--red)">{{ row.review.refused }} 拒绝</span>
+            <div class="muted">改期 {{ row.review.rescheduled }} · 投诉单 {{ row.review.complaintRegistered }}</div>
+          </td>
+          <td>
+            <strong :style="row.review.complaintRate >= 0.25 ? 'color:var(--red)' : 'color:var(--green)'">
+              {{ Math.round(row.review.complaintRate * 100) }}%
+            </strong>
+            <div class="small muted">{{ row.review.feedbackCount ? `${row.review.feedbackCount} 团已离馆反馈` : '暂无离馆反馈' }}</div>
+          </td>
+          <td class="stars">{{ row.review.avgSatisfaction?.toFixed(1) ?? '—' }}</td>
+          <td class="money">¥{{ row.review.refundTotal }}</td>
+          <td class="small">
+            <span v-if="row.inc.status === 'active'" class="muted">闭展结束后可决策</span>
+            <template v-else>
+              <span v-if="warningOn(row.inc.id)" class="tag tag-warn">⚠ 已挂预警</span>
+              <strong v-else-if="row.suggest" style="color:var(--red)">建议增加预警</strong>
+              <span v-else class="tag tag-ok">指标平稳，无需预警</span>
+              <div style="margin-top:6px; display:flex; gap:6px">
+                <button v-if="!warningOn(row.inc.id)" class="btn-sm btn-gold" :disabled="!row.suggest" @click="addWarning(row.inc.id)">增加预警说明</button>
+                <button v-else class="btn-sm" @click="removeWarning(row.inc.id)">撤下预警</button>
+                <RouterLink class="btn-sm" :to="`/closure`">去分流台</RouterLink>
+              </div>
+            </template>
+          </td>
+        </tr>
+        <tr v-for="row in closureRows" :key="row.inc.id + '-note'">
+          <td colspan="8" style="background:var(--paper); padding:10px 14px">
+            <div class="small muted" style="margin-bottom:5px">运营复盘备注（闭展原因、改进措施，随事件归档）</div>
+            <textarea
+              :value="row.inc.reviewNote"
+              style="width:100%; min-height:48px"
+              placeholder="如：高峰前增加配电巡检、预约页增加临时调整提示、改线话术统一……"
+              @change="saveReviewNote(row.inc.id, ($event.target as HTMLTextAreaElement).value)"
+            ></textarea>
+          </td>
+        </tr>
+      </tbody>
+    </table>
   </div>
 </template>

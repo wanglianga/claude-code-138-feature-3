@@ -52,6 +52,22 @@ const guideChanges = computed(() =>
   r.value?.timeline.filter((e) => e.kind === 'guide_swap' || e.kind === 'guide_assign') ?? [],
 )
 
+/** 本团参与的临时闭展事件及处置单 */
+const closurePlans = computed(() => {
+  if (!r.value) return []
+  return museum.incidents
+    .filter((inc) => inc.plans[r.value!.id])
+    .map((inc) => ({ inc, plan: inc.plans[r.value!.id] }))
+})
+const PLAN_STATUS_TEXT: Record<string, string> = {
+  identified: '已筛出待处置',
+  notified: '已通知联系人，待答复',
+  rerouted: '接受替代路线',
+  refunded: '拒绝替代路线 · 部分退款',
+  rescheduled: '拒绝替代路线 · 已改期',
+  complaint: '拒绝替代路线 · 投诉登记',
+}
+
 function submitComplaint() {
   if (!newComplaint.value.trim()) return
   store.addComplaint(selectedId.value, newComplaint.value.trim(), r.value?.contactName ?? '团体联系人')
@@ -134,6 +150,49 @@ const deviceRows = computed(() => r.value?.devices ?? [])
           <div class="stars" style="font-size:22px">{{ r.satisfaction ? '★'.repeat(r.satisfaction) + '☆'.repeat(5 - r.satisfaction) : '—' }}</div>
           <div class="small muted">{{ r.departAt ? `离馆 ${hmOfISO(r.departAt)}` : '' }}</div>
         </div>
+      </div>
+
+      <!-- 临时闭展处置（设备故障分流证据） -->
+      <div v-if="closurePlans.length" class="card">
+        <div class="card-title">
+          临时闭展分流处置
+          <span class="aside">受影响筛选 · 替代路线/等待/换主题 · 通知 · 退款/改期/投诉 · 讲解重点</span>
+        </div>
+          <div v-for="{ inc, plan } in closurePlans" :key="inc.id" class="callout" :class="inc.status === 'active' ? 'danger' : 'ok'" style="margin-bottom:10px">
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+              <strong>{{ museum.hallById(inc.hallId)?.name }}</strong>
+              <span class="tag" :class="inc.status === 'active' ? 'tag-maint' : 'tag-ok'">{{ inc.status === 'active' ? '闭展中' : '影响已结束' }}</span>
+              <span class="small muted mono">{{ inc.start }}-{{ inc.end || '…' }}</span>
+              <span class="tag">{{ PLAN_STATUS_TEXT[plan.status] }}</span>
+            </div>
+            <div class="small" style="margin-top:6px">{{ inc.reason }} · 登记人 {{ inc.declaredBy }}</div>
+            <dl class="kv" style="margin-top:8px">
+              <dt>预计等待</dt><dd>{{ plan.waitMin }} 分钟</dd>
+              <dt>替代路线</dt>
+              <dd>
+                <template v-if="plan.appliedHallId">已改至 <strong>{{ museum.hallById(plan.appliedHallId)?.name }}</strong></template>
+                <template v-else-if="plan.suggestedHallId">建议 → {{ museum.hallById(plan.suggestedHallId)?.name }}（团队未接受）</template>
+                <template v-else>无</template>
+              </dd>
+              <dt>讲解主题</dt>
+              <dd>
+                <span v-if="plan.switchedThemeId">已切换为「{{ museum.themeById(plan.switchedThemeId)?.name }}」</span>
+                <span v-else-if="plan.themeSwitchable">当时可换（{{ plan.altThemeIds.map((t) => museum.themeById(t)?.name).join('、') }}）</span>
+                <span v-else>不可换</span>
+              </dd>
+              <dt>联系人通知</dt>
+              <dd>{{ plan.notified ? `已于 ${plan.notifiedAt?.slice(11, 16)} 送达（${inc.notices.filter((n) => n.contactName === r?.contactName).length} 条记录）` : '未通知' }}</dd>
+              <dt>讲解重点</dt>
+              <dd>
+                <template v-if="r?.briefings?.length">已同步 {{ r.assignedGuideIds.map((g) => museum.guideById(g)?.name).join('、') }}
+                  ，{{ r.briefings.some((b) => b.readAt) ? '讲解员已确认' : '待讲解员确认' }}</template>
+                <template v-else>—</template>
+              </dd>
+              <dt v-for="rf in r?.refunds?.filter((x) => x.incidentId === inc.id) ?? []" :key="rf.id">部分退款</dt>
+              <dd v-for="rf in r?.refunds?.filter((x) => x.incidentId === inc.id) ?? []" :key="'v-' + rf.id" class="money">¥{{ rf.amount }}（{{ rf.ratio }}%）<span class="small muted" style="margin-left:6px">{{ rf.reason }}</span></dd>
+              <dt v-if="r?.rescheduledTo">改期至</dt><dd v-if="r?.rescheduledTo">{{ r.rescheduledTo.slice(0, 16).replace('T', ' ') }}（改期待约）</dd>
+            </dl>
+          </div>
       </div>
 
       <!-- 分流决策 & 讲解员 -->

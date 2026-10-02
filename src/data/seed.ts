@@ -1,5 +1,12 @@
 import { HEADSET_DEPOSIT, HALLS, TODAY } from '@/data/museum'
-import type { DeviceUnit, Reservation, RouteStop, TimelineEvent } from '@/types'
+import type {
+  ClosureIncident,
+  DeviceUnit,
+  RefundRecord,
+  Reservation,
+  RouteStop,
+  TimelineEvent,
+} from '@/types'
 
 export function iso(hm: string, day = TODAY): string {
   return `${day}T${hm}:00`
@@ -69,6 +76,18 @@ function applySeedHeadsets(pool: DeviceUnit[]) {
   pool[35].status = 'damaged'
   pool[35].damageFee = 50
   pool[35].note = '耳罩开裂'
+  // R6（09:40 团，已离馆）HS-041..060 完好归还
+  for (let i = 40; i < 60; i++) {
+    pool[i].status = 'returned'
+    pool[i].lentAt = iso('09:40')
+    pool[i].returnedAt = iso('10:15')
+  }
+  // R7（09:50 团，已离馆）HS-061..078 完好归还
+  for (let i = 60; i < 78; i++) {
+    pool[i].status = 'returned'
+    pool[i].lentAt = iso('09:50')
+    pool[i].returnedAt = iso('10:24')
+  }
 }
 
 function lentSet(start: number, count: number): DeviceUnit[] {
@@ -321,6 +340,231 @@ export function seedReservations(): Reservation[] {
           detail: '二号厅拥挤导致讲解时长缩短约 20 分钟。',
         }),
       ],
+    },
+    {
+      // —— 六号厅照明故障闭展：拒绝替代路线 → 部分退款 + 投诉 ——
+      id: 'R20261001-06',
+      orgType: 'school',
+      orgName: '博远教育研学营',
+      groupSize: 20,
+      ageBand: 'youth',
+      language: 'zh',
+      accessible: false,
+      themeId: 't_master',
+      arriveTime: iso('08:50'),
+      contactName: '蒋领队',
+      contactPhone: '135****6620',
+      busInfo: '中巴 1 辆',
+      needHeadsets: true,
+      headsetCount: 20,
+      note: '中学生研学，镇馆之宝精华线。',
+      status: 'completed',
+      createdAt: iso('08:25'),
+      confirmedAt: iso('08:30'),
+      assignedGuideIds: ['g5'],
+      batchNo: 'B0850',
+      securityLane: 'lane_a',
+      actualArrive: iso('08:52'),
+      verifiedSize: 20,
+      route: [
+        stop('h2', '09:00', '09:25', 'done', undefined, '09:00', '09:24'),
+        stop('h4', '09:30', '09:55', 'done', undefined, '09:30', '09:53'),
+        stop('h6', '10:00', '10:25', 'maintenance', '照明配电柜跳闸临时闭展（09:00-10:20），团队拒绝替代路线，提前结束', '10:00', '10:05'),
+      ],
+      durationMin: 55,
+      devices: returnedSet(41, 20),
+      depositTotal: 20 * HEADSET_DEPOSIT,
+      depositDeduction: 0,
+      departAt: iso('10:10'),
+      satisfaction: 2,
+      complaint:
+        '六号厅突然闭展，等待后被带去一号厅，团员认为与「镇馆之宝精华线」宣传不符，拒绝该替代路线，要求退还部分讲解费并给出正式说明。',
+      refunds: [
+        {
+          id: 'rf_seed_1',
+          incidentId: 'INC-20261001-01',
+          at: iso('10:06'),
+          amount: 200,
+          ratio: 50,
+          reason: '六号厅照明故障闭展，团队拒绝替代路线，按讲解服务费 50% 部分退款',
+          by: '前台主管 沈姐',
+        } satisfies RefundRecord,
+      ],
+      timeline: [
+        ev('submit', '团体预约已提交', '08:25', { by: '蒋领队' }),
+        ev('confirm', '预约确认：何田田 / B0850 批次', '08:30', { by: '沈姐' }),
+        ev('arrive', '团队到馆（迟到 2 分钟）', '08:52', { by: '蒋领队' }),
+        ev('headcount', '前台核验人数：20 人，与预约一致', '08:55', { by: '小唐' }),
+        ev('device_handout', '发放耳麦 20 台（HS-041 ~ HS-060）', '08:58', {
+          by: '老郭',
+          amount: 4000,
+        }),
+        ev('batch_admit', 'B0850 批次入馆', '08:59', { by: '安检员' }),
+        ev('start_tour', '镇馆之宝精华线开始讲解', '09:00', { by: '何田田' }),
+        ev('closure_incident', '「六号厅 · 油画典藏」设备故障临时闭展，本团被筛出分流', '09:01', {
+          by: '工程部 老葛',
+          detail: '预计等待 20 分钟，可换讲解主题。',
+        }),
+        ev('closure_notify', '已通知联系人 蒋领队（135****6620）', '09:05', {
+          by: '前台主管 沈姐',
+          detail: '闭展分流：照明配电柜跳闸，预计等待 20 分钟，替代路线/退款/改期待确认。',
+        }),
+        ev('partial_refund', '办理部分退款 50%（¥200）', '10:06', {
+          by: '前台主管 沈姐',
+          amount: 200,
+          detail: '讲解服务费基数 ¥400（20 人 × ¥20）。六号厅照明故障闭展，团队拒绝替代路线。',
+        }),
+        ev('complaint', '闭展投诉登记：拒绝替代路线，要求退费与说明', '10:07', {
+          by: '前台主管 沈姐',
+        }),
+        ev('device_return', '归还耳麦 20 台，全部完好', '10:08', { by: '老郭' }),
+        ev('complete', '团队提前离馆，满意度 2/5', '10:10', { by: '小唐' }),
+        ev('closure_update', '「六号厅 · 油画典藏」闭展影响结束（10:20）', '10:20', {
+          by: '工程部 老葛',
+          detail: '更换配电回路后恢复照明，处置单进入运营复盘。',
+        }),
+      ],
+    },
+    {
+      // —— 六号厅照明故障闭展：接受替代路线改道一号厅，满意 ——
+      id: 'R20261001-07',
+      orgType: 'travel',
+      orgName: '北辰国际交流团',
+      groupSize: 18,
+      ageBand: 'adult',
+      language: 'en',
+      accessible: false,
+      themeId: 't_west',
+      arriveTime: iso('09:20'),
+      contactName: '林导',
+      contactPhone: '139****3098',
+      busInfo: '中巴 1 辆，即停即走',
+      needHeadsets: true,
+      headsetCount: 18,
+      note: '英语外宾团。',
+      status: 'completed',
+      createdAt: iso('08:40'),
+      confirmedAt: iso('08:45'),
+      assignedGuideIds: ['g2'],
+      batchNo: 'B0920',
+      securityLane: 'lane_a',
+      actualArrive: iso('09:22'),
+      verifiedSize: 18,
+      route: [
+        stop('h6', '09:30', '09:58', 'maintenance', '照明配电柜跳闸临时闭展（09:00-10:20），改道至一号厅', '09:30', '09:40'),
+        stop('h1', '09:45', '10:13', 'done', '由六号厅改道至此：照明故障闭展分流，团队接受替代路线', '09:45', '10:12'),
+        stop('h7', '10:18', '10:46', 'done', undefined, '10:18', '10:44'),
+        stop('h1', '10:51', '11:19', 'skipped', '该展厅已作为替代展厅参观，离馆时未重复安排'),
+      ],
+      durationMin: 61,
+      devices: returnedSet(61, 18),
+      depositTotal: 18 * HEADSET_DEPOSIT,
+      depositDeduction: 0,
+      departAt: iso('10:50'),
+      satisfaction: 5,
+      briefings: [
+        {
+          id: 'br_seed_1',
+          incidentId: 'INC-20261001-01',
+          guideId: 'g2',
+          at: iso('09:42'),
+          targetHallName: '一号厅 · 海派丹青',
+          readAt: iso('09:44'),
+          points: [
+            '「六号厅 · 油画典藏」因照明配电柜跳闸临时关闭，抵达前请先向团队说明并致歉，避免聚集等候。',
+            '替代展厅「一号厅 · 海派丹青」重点讲解：《风雨归舟图》，建议停留 28 分钟。',
+            '替代展厅含禁拍展品，入场前务必提醒收起手机与相机。',
+            '替代展厅需保持安静，请提前提示团队放轻脚步、耳麦音量调低。',
+          ],
+        },
+      ],
+      timeline: [
+        ev('submit', '团体预约已提交', '08:40', { by: '林导' }),
+        ev('confirm', '预约确认：周牧 / B0920 批次', '08:45', { by: '沈姐' }),
+        ev('closure_incident', '「六号厅 · 油画典藏」设备故障临时闭展，本团被筛出分流', '09:00', {
+          by: '工程部 老葛',
+          detail: '预计等待 50 分钟，可换讲解主题。',
+        }),
+        ev('arrive', '团队到馆（迟到 2 分钟）', '09:22', { by: '林导' }),
+        ev('headcount', '前台核验人数：18 人，与预约一致', '09:24', { by: '小唐' }),
+        ev('closure_notify', '已通知联系人 林导（139****3098）', '09:26', {
+          by: '前台主管 沈姐',
+          detail: '闭展分流：照明配电柜跳闸，预计等待 50 分钟，替代路线/退款/改期待确认。',
+        }),
+        ev('device_handout', '发放耳麦 18 台（HS-061 ~ HS-078）', '09:28', {
+          by: '老郭',
+          amount: 3600,
+        }),
+        ev('batch_admit', 'B0920 批次入馆', '09:29', { by: '安检员' }),
+        ev('start_tour', '西方艺术简史（外语讲解）开始讲解', '09:30', { by: '周牧' }),
+        ev('reroute', '路线调整：六号厅 → 一号厅', '09:42', {
+          by: '前台主管 沈姐',
+          detail: '照明故障闭展分流，团队接受替代路线；后续团队入场时间已联动顺延。',
+        }),
+        ev('closure_guide', '讲解重点已同步至讲解员 周牧', '09:42', {
+          by: '前台主管 沈姐',
+          detail: '替代展厅一号厅重点讲《风雨归舟图》，含禁拍展品需提前提醒。',
+        }),
+        ev('closure_guide_read', '讲解员 周牧 已确认讲解重点', '09:44', { by: '周牧' }),
+        ev('closure_update', '「六号厅 · 油画典藏」闭展影响结束（10:20）', '10:20', {
+          by: '工程部 老葛',
+          detail: '更换配电回路后恢复照明，处置单进入运营复盘。',
+        }),
+        ev('device_return', '归还耳麦 18 台，全部完好', '10:48', { by: '老郭' }),
+        ev('complete', '团队离馆，满意度 5/5', '10:50', { by: '小唐' }),
+      ],
+    },
+  ]
+}
+
+/** 已结束的设备故障闭展案例：六号厅照明故障，两个团被改线（供运营复盘） */
+export function seedIncidents(): ClosureIncident[] {
+  return [
+    {
+      id: 'INC-20261001-01',
+      hallId: 'h6',
+      reason: '照明配电柜跳闸（部分展项断电）',
+      start: '09:00',
+      end: '10:20',
+      declaredAt: iso('09:00'),
+      declaredBy: '工程部 老葛',
+      status: 'resolved',
+      resolvedAt: iso('10:20'),
+      resolvedNote: '更换配电回路后恢复照明，10:20 重新开放。',
+      reviewNote: '被改线 2 团中 1 团投诉（投诉率 50%，满意度均值 3.5），建议在六号厅入口与预约页增加照明检修预警提示，高峰前增加配电巡检。',
+      notices: [
+        { id: 'nt_seed_1', at: iso('09:05'), contactName: '蒋领队', contactPhone: '135****6620', channel: 'im', by: '前台主管 沈姐', result: 'delivered' },
+        { id: 'nt_seed_2', at: iso('09:26'), contactName: '林导', contactPhone: '139****3098', channel: 'im', by: '前台主管 沈姐', result: 'delivered' },
+      ],
+      plans: {
+        'R20261001-06': {
+          incidentId: 'INC-20261001-01',
+          blockedHallId: 'h6',
+          suggestedHallId: 'h1',
+          waitMin: 20,
+          themeSwitchable: true,
+          altThemeIds: ['t_family'],
+          status: 'refunded',
+          notified: true,
+          notifiedAt: iso('09:05'),
+          acceptedAlternative: false,
+          decidedAt: iso('10:06'),
+        },
+        'R20261001-07': {
+          incidentId: 'INC-20261001-01',
+          blockedHallId: 'h6',
+          suggestedHallId: 'h1',
+          waitMin: 50,
+          themeSwitchable: true,
+          altThemeIds: ['t_modern'],
+          status: 'rerouted',
+          notified: true,
+          notifiedAt: iso('09:26'),
+          appliedHallId: 'h1',
+          acceptedAlternative: true,
+          decidedAt: iso('09:42'),
+        },
+      },
     },
   ]
 }

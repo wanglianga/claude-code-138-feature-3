@@ -184,6 +184,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .badge-completed { background: var(--paper-2); color: var(--ink-3); border-color: var(--line-strong); }
 .badge-rejected { background: var(--red-soft); color: var(--red); border-color: #e0bcb4; }
 .badge-cancelled { background: var(--paper-2); color: var(--ink-3); border-color: var(--line-strong); }
+.badge-rescheduled { background: var(--blue-soft); color: var(--blue); border-color: #bcd0e0; }
 
 .tag {
   display: inline-flex; align-items: center; gap: 3px;

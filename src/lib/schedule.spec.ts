@@ -1,18 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import {
+  affectedByClosure,
+  briefingPoints,
   buildRoute,
+  closureReview,
+  closureWaitMin,
   downstreamImpact,
   guideBusyWindows,
   occupancyGrid,
   routePeakLoads,
   securityPlan,
+  shouldAddWarning,
   splitBatches,
   suggestReroute,
+  switchableThemes,
   availableGuides,
 } from './schedule'
 import { GUIDES, HALLS, SECURITY_LANES, THEMES } from '@/data/museum'
-import { seedReservations } from '@/data/seed'
-import type { RouteStop } from '@/types'
+import { seedIncidents, seedReservations } from '@/data/seed'
+import type { Reservation, RouteStop } from '@/types'
 
 const reservations = seedReservations()
 const byId = (id: string) => reservations.find((r) => r.id === id)!
@@ -207,5 +213,72 @@ describe('Reservation 种子完整性', () => {
     expect(r3.devices).toHaveLength(24)
     expect(r3.devices.every((d) => d.status === 'lent')).toBe(true)
     expect(r3.depositTotal).toBe(4800)
+  })
+})
+
+describe('临时闭展分流', () => {
+  it('affectedByClosure 只筛出路线经该厅且时段重叠、未离馆的团队', () => {
+    // 种子 R6/R7 已离馆（历史闭展案例），复制并恢复为参观中以验证实时筛选
+    const live: Reservation[] = JSON.parse(JSON.stringify(reservations))
+    for (const id of ['R20261001-06', 'R20261001-07']) {
+      const r = live.find((x) => x.id === id)!
+      r.status = 'touring'
+      const h6 = r.route.find((s) => s.hallId === 'h6')
+      if (h6) h6.state = 'planned'
+    }
+    // 六号厅 09:00-10:20 闭展：R6（10:00 站）、R7（09:30 站）应被筛出
+    const hit = affectedByClosure(live, 'h6', '09:00', '10:20').map((r) => r.id)
+    expect(hit).toContain('R20261001-06')
+    expect(hit).toContain('R20261001-07')
+    // R5 已离馆、R4 11:10 后才到六号厅，均不在内
+    expect(hit).not.toContain('R20261001-05')
+    expect(hit).not.toContain('R20261001-04')
+  })
+
+  it('closureWaitMin：计划站按计划进场等待复开，当前站按现在时刻', () => {
+    const planned: RouteStop = { hallId: 'h6', plannedEnter: '10:00', plannedLeave: '10:25', durationMin: 25, state: 'planned' }
+    expect(closureWaitMin(planned, '10:20', '09:30')).toBe(20)
+    const current: RouteStop = { hallId: 'h6', plannedEnter: '09:30', plannedLeave: '09:58', durationMin: 28, state: 'current' }
+    expect(closureWaitMin(current, '10:20', '09:40')).toBe(40)
+  })
+
+  it('switchableThemes：仅返回本团讲解员可讲、不含闭展厅的主题', () => {
+    const r7 = byId('R20261001-07') // g2 周牧，t_west，会 en
+    const themes = switchableThemes(r7, 'h6', THEMES, HALLS, GUIDES).map((t) => t.id)
+    // 周牧可讲 t_master / t_modern，但 t_master 含 h6，应被排除
+    expect(themes).toContain('t_modern')
+    expect(themes).not.toContain('t_master')
+    expect(themes).not.toContain('t_west') // 不含当前主题
+  })
+
+  it('briefingPoints：替代展厅禁拍/安静要求进入讲解重点', () => {
+    const r6 = byId('R20261001-06')
+    const points = briefingPoints(
+      HALLS.find((h) => h.id === 'h6')!,
+      '照明配电柜跳闸',
+      HALLS.find((h) => h.id === 'h1')!,
+      r6,
+      undefined,
+    )
+    expect(points.join()).toContain('临时关闭')
+    expect(points.join()).toContain('禁拍')
+    expect(points.join()).toContain('保持安静')
+  })
+
+  it('closureReview：被改线团队投诉率 50%、满意度均值 3.5、退款 ¥200', () => {
+    const [incident] = seedIncidents()
+    const rv = closureReview(incident, reservations)
+    expect(rv.affected).toBe(2)
+    expect(rv.rerouted).toBe(1)
+    expect(rv.refused).toBe(1)
+    expect(rv.feedbackCount).toBe(2)
+    expect(rv.complaintRate).toBe(0.5)
+    expect(rv.avgSatisfaction).toBeCloseTo(3.5, 5)
+    expect(rv.refundTotal).toBe(200)
+  })
+
+  it('shouldAddWarning：投诉率≥25% 或满意度≤3.5 时建议加预警', () => {
+    const [incident] = seedIncidents()
+    expect(shouldAddWarning(closureReview(incident, reservations))).toBe(true)
   })
 })

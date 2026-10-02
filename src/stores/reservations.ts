@@ -1,21 +1,29 @@
 import { defineStore } from 'pinia'
-import { DAMAGE_FEE, LOST_FEE } from '@/data/museum'
+import { DAMAGE_FEE, LOST_FEE, TOUR_FEE_PER_PERSON } from '@/data/museum'
 import { seedReservations } from '@/data/seed'
 import {
+  affectedByClosure,
+  briefingPoints,
   buildRoute,
+  closureAlternative,
+  occupancyGrid,
   plannedDuration,
 } from '@/lib/schedule'
 import { addHM, hmOfISO, toMin, uid } from '@/lib/time'
 import { useMuseumStore } from './museum'
 import type {
   AgeBand,
+  ClosureIncident,
+  ClosureNotice,
   EventKind,
   GroupType,
   HallClosure,
   Language,
+  RefundRecord,
   Reservation,
   ReservationStatus,
   RouteStop,
+  Theme,
   TimelineEvent,
 } from '@/types'
 
@@ -282,6 +290,266 @@ export const useReservationsStore = defineStore('reservations', {
           }
         }
       }
+    },
+
+    // ---------- 临时闭展分流（设备故障） ----------
+    /**
+     * 登记设备故障闭展：
+     * 建立闭展事件、写入实时维护、从当日预约筛出受影响团队并生成处置单，
+     * 同时把受影响站点标记为维护。
+     */
+    declareClosure(
+      payload: { hallId: string; reason: string; start: string; expectedEnd: string },
+      by: string,
+    ): ClosureIncident {
+      const museum = useMuseumStore()
+      const closure: HallClosure = { start: payload.start, end: payload.expectedEnd, reason: payload.reason }
+      museum.setMaintenance(payload.hallId, closure)
+      const incident: ClosureIncident = {
+        id: uid('inc'),
+        hallId: payload.hallId,
+        reason: payload.reason,
+        start: payload.start,
+        end: payload.expectedEnd,
+        declaredAt: museum.nowISO,
+        declaredBy: by,
+        status: 'active',
+        plans: {},
+        notices: [],
+      }
+      const grid = occupancyGrid(this.list, { maintenance: museum.maintenance, extraLoad: museum.extraLoad })
+      const affected = affectedByClosure(this.list, payload.hallId, payload.start, payload.expectedEnd)
+      for (const r of affected) {
+        const alt = closureAlternative(r, payload.hallId, {
+          startHM: payload.start,
+          expectEndHM: payload.expectedEnd,
+          halls: museum.halls,
+          themes: museum.themes,
+          guides: museum.guides,
+          grid,
+          live: { maintenance: museum.maintenance, extraLoad: museum.extraLoad },
+          nowHM: museum.nowHM,
+        })
+        incident.plans[r.id] = {
+          incidentId: incident.id,
+          blockedHallId: payload.hallId,
+          suggestedHallId: alt?.suggestions[0]?.hall.id,
+          waitMin: alt?.waitMin ?? 0,
+          themeSwitchable: (alt?.altThemes.length ?? 0) > 0,
+          altThemeIds: alt?.altThemes.map((t) => t.id) ?? [],
+          status: 'identified',
+        }
+        // 站点标记维护并留痕
+        for (const s of r.route) {
+          if (s.hallId !== payload.hallId || s.state === 'done' || s.state === 'skipped') continue
+          const win = s.actualEnter ?? s.plannedEnter
+          if (win < payload.expectedEnd && s.plannedLeave > payload.start) {
+            s.state = 'maintenance'
+            s.note = `${payload.reason}临时闭展（${payload.start}-${payload.expectedEnd}），已纳入分流处置`
+            if (s.actualEnter && !s.actualLeave) s.actualLeave = museum.nowHM
+          }
+        }
+        this.log(
+          r,
+          'closure_incident',
+          `「${museum.hallById(payload.hallId)?.name}」设备故障临时闭展，本团被筛出分流`,
+          museum.nowISO,
+          by,
+          { detail: `预计等待 ${incident.plans[r.id].waitMin} 分钟${incident.plans[r.id].themeSwitchable ? '，可换讲解主题' : ''}。` },
+        )
+      }
+      museum.addIncident(incident)
+      return incident
+    },
+
+    /** 批量通知受影响团队联系人 */
+    notifyClosureContacts(incidentId: string, resIds: string[], by: string) {
+      const museum = useMuseumStore()
+      const incident = museum.incidentById(incidentId)
+      if (!incident) return
+      for (const id of resIds) {
+        const r = this.byId(id)
+        const plan = incident.plans[id]
+        if (!r || !plan) continue
+        const notice: ClosureNotice = {
+          id: uid('nt'),
+          at: museum.nowISO,
+          contactName: r.contactName,
+          contactPhone: r.contactPhone,
+          channel: 'im',
+          by,
+          result: 'delivered',
+        }
+        incident.notices.push(notice)
+        plan.notified = true
+        plan.notifiedAt = museum.nowISO
+        if (plan.status === 'identified') plan.status = 'notified'
+        this.log(r, 'closure_notify', `已通知联系人 ${r.contactName}（${r.contactPhone}）`, museum.nowISO, by, {
+          detail: `闭展分流：${incident.reason}，预计等待 ${plan.waitMin} 分钟，替代路线/退款/改期待确认。`,
+        })
+      }
+    },
+
+    /** 团队接受替代路线（落地改道），并同步讲解重点 */
+    acceptClosureAlternative(
+      incidentId: string,
+      resId: string,
+      payload: { targetHallId: string; durationMin: number; switchThemeId?: string },
+      by: string,
+    ) {
+      const museum = useMuseumStore()
+      const incident = museum.incidentById(incidentId)
+      const r = this.byId(resId)
+      if (!incident || !r) return
+      const plan = incident.plans[resId]
+      if (!plan) return
+      if (payload.switchThemeId && payload.switchThemeId !== r.themeId) {
+        this.switchTheme(resId, payload.switchThemeId, by)
+        plan.switchedThemeId = payload.switchThemeId
+      }
+      this.applyReroute(resId, {
+        blockedHallId: incident.hallId,
+        targetHallId: payload.targetHallId,
+        atHM: museum.nowHM,
+        durationMin: payload.durationMin,
+        reason: `${incident.reason}闭展分流，团队接受替代路线`,
+      }, by)
+      plan.status = 'rerouted'
+      plan.appliedHallId = payload.targetHallId
+      plan.acceptedAlternative = true
+      plan.decidedAt = museum.nowISO
+      this.syncClosureBriefing(incidentId, resId, payload.targetHallId, payload.switchThemeId, by)
+    },
+
+    /** 更换讲解主题（仅记录联动，不改写剩余动线，讲解员按重点组织） */
+    switchTheme(resId: string, themeId: string, by: string) {
+      const museum = useMuseumStore()
+      const r = this.byId(resId)
+      if (!r) return
+      const old = museum.themeById(r.themeId)?.name
+      const next = museum.themeById(themeId)?.name
+      r.themeId = themeId
+      this.log(r, 'switch_theme', `讲解主题变更：${old} → ${next}`, museum.nowISO, by, {
+        detail: '闭展分流，按讲解员可讲主题与团队意愿切换。',
+      })
+    },
+
+    /** 向本团讲解员同步新的讲解重点 */
+    syncClosureBriefing(incidentId: string, resId: string, targetHallId: string, switchThemeId?: string, by?: string) {
+      const museum = useMuseumStore()
+      const incident = museum.incidentById(incidentId)
+      const r = this.byId(resId)
+      if (!incident || !r) return
+      const hall = museum.hallById(incident.hallId)!
+      const target = museum.hallById(targetHallId)
+      const altTheme: Theme | undefined = switchThemeId ? museum.themeById(switchThemeId) : undefined
+      const points = briefingPoints(hall, incident.reason, target, r, altTheme)
+      r.briefings ??= []
+      for (const guideId of r.assignedGuideIds) {
+        r.briefings.push({
+          id: uid('br'),
+          incidentId,
+          guideId,
+          at: museum.nowISO,
+          points,
+          targetHallName: target?.name,
+        })
+        this.log(
+          r,
+          'closure_guide',
+          `讲解重点已同步至讲解员 ${museum.guideById(guideId)?.name ?? guideId}`,
+          museum.nowISO,
+          by ?? museum.guideById(guideId)?.name ?? '系统',
+          { detail: points.join(' ') },
+        )
+      }
+    },
+
+    /** 讲解员端确认已读讲解重点 */
+    markBriefingRead(resId: string, briefingId: string) {
+      const museum = useMuseumStore()
+      const r = this.byId(resId)
+      if (!r?.briefings) return
+      const b = r.briefings.find((x) => x.id === briefingId)
+      if (!b || b.readAt) return
+      b.readAt = museum.nowISO
+      this.log(r, 'closure_guide_read', `讲解员 ${museum.guideById(b.guideId)?.name} 已确认讲解重点`, museum.nowISO, museum.guideById(b.guideId)?.name ?? '讲解员')
+    },
+
+    /** 团队拒绝替代路线：办理部分退款 / 改期 / 投诉登记 */
+    refuseClosureAlternative(
+      incidentId: string,
+      resId: string,
+      action: 'refund' | 'reschedule' | 'complaint',
+      payload: { refundRatio?: number; rescheduleTo?: string; complaint?: string; reason?: string },
+      by: string,
+    ) {
+      const museum = useMuseumStore()
+      const incident = museum.incidentById(incidentId)
+      const r = this.byId(resId)
+      if (!incident || !r) return
+      const plan = incident.plans[resId]
+      if (!plan) return
+      plan.acceptedAlternative = false
+      plan.decidedAt = museum.nowISO
+
+      if (action === 'refund') {
+        const ratio = payload.refundRatio ?? 20
+        const base = (r.verifiedSize ?? r.groupSize) * TOUR_FEE_PER_PERSON
+        const amount = Math.round((base * ratio) / 100)
+        const rec: RefundRecord = {
+          id: uid('rf'),
+          incidentId,
+          at: museum.nowISO,
+          amount,
+          ratio,
+          reason: payload.reason || `${incident.reason}闭展，团队拒绝替代路线`,
+          by,
+        }
+        r.refunds ??= []
+        r.refunds.push(rec)
+        plan.status = 'refunded'
+        this.log(r, 'partial_refund', `办理部分退款 ${ratio}%（¥${amount}）`, museum.nowISO, by, {
+          amount,
+          detail: `讲解服务费基数 ¥${base}（${r.verifiedSize ?? r.groupSize} 人 × ¥${TOUR_FEE_PER_PERSON}）。${rec.reason}`,
+        })
+      } else if (action === 'reschedule') {
+        const to = payload.rescheduleTo ?? museum.nowISO
+        r.rescheduledTo = to
+        r.status = 'rescheduled'
+        plan.status = 'rescheduled'
+        this.log(r, 'reschedule', `团队拒绝替代路线，已改期至 ${to.slice(0, 16).replace('T', ' ')}`, museum.nowISO, by, {
+          detail: payload.reason || '闭展改期，新预约待重新确认。',
+        })
+      } else {
+        plan.status = 'complaint'
+        const text = payload.complaint?.trim()
+        if (text) {
+          r.complaint = text
+          this.log(r, 'complaint', '闭展投诉登记：' + text, museum.nowISO, by)
+        }
+      }
+    },
+
+    /** 闭展影响结束：解除维护并归档事件（投诉率/满意度在看板复盘） */
+    resolveClosure(incidentId: string, endHM: string, note: string, by: string) {
+      const museum = useMuseumStore()
+      const incident = museum.incidentById(incidentId)
+      if (!incident) return
+      museum.resolveIncident(incidentId, endHM, note)
+      museum.reopenHall(incident.hallId)
+      for (const r of this.list) {
+        if (!incident.plans[r.id]) continue
+        this.log(r, 'closure_update', `「${museum.hallById(incident.hallId)?.name}」闭展影响结束（${endHM}）`, museum.nowISO, by, {
+          detail: note || '设备恢复，展厅重新开放，处置单进入运营复盘。',
+        })
+      }
+    },
+
+    /** 运营复盘备注（随事件归档） */
+    reviewClosure(incidentId: string, note: string) {
+      const museum = useMuseumStore()
+      museum.updateIncident(incidentId, { reviewNote: note })
     },
 
     /**

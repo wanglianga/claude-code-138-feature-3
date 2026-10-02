@@ -6,9 +6,19 @@ import {
   SECURITY_LANES,
   THEMES,
 } from '@/data/museum'
-import { seedHeadsets } from '@/data/seed'
+import { seedHeadsets, seedIncidents } from '@/data/seed'
 import { addHM, hmOfISO } from '@/lib/time'
-import type { DeviceUnit, DeviceStatus, Guide, Hall, HallClosure, SecurityLane, Theme } from '@/types'
+import type {
+  ClosureIncident,
+  DeviceUnit,
+  DeviceStatus,
+  Guide,
+  Hall,
+  HallClosure,
+  HallWarning,
+  SecurityLane,
+  Theme,
+} from '@/types'
 
 interface MuseumState {
   halls: Hall[]
@@ -21,6 +31,10 @@ interface MuseumState {
   maintenance: Record<string, HallClosure>
   /** 散客实时占用录入 */
   extraLoad: Record<string, number>
+  /** 临时闭展（设备故障）事件，含受影响团队处置单 */
+  incidents: ClosureIncident[]
+  /** 复盘后挂到展厅的预警说明 */
+  warnings: HallWarning[]
   nowHM: string
   running: boolean
 }
@@ -37,6 +51,8 @@ export const useMuseumStore = defineStore('museum', {
     depositPerUnit: HEADSET_DEPOSIT,
     maintenance: {},
     extraLoad: { h2: 28, h5: 10 },
+    incidents: seedIncidents(),
+    warnings: [],
     nowHM: '10:25',
     running: false,
   }),
@@ -51,6 +67,9 @@ export const useMuseumStore = defineStore('museum', {
       for (const d of s.headsets) c[d.status]++
       return c
     },
+    activeIncidents: (s) => s.incidents.filter((i) => i.status === 'active'),
+    incidentById: (s) => (id: string) => s.incidents.find((i) => i.id === id),
+    warningByHall: (s) => (hallId: string) => s.warnings.find((w) => w.hallId === hallId),
   },
 
   actions: {
@@ -87,6 +106,35 @@ export const useMuseumStore = defineStore('museum', {
     setExtraLoad(hallId: string, n: number) {
       if (n > 0) this.extraLoad[hallId] = n
       else delete this.extraLoad[hallId]
+    },
+
+    // ---------- 临时闭展事件 ----------
+    addIncident(incident: ClosureIncident) {
+      this.incidents.unshift(incident)
+    },
+    updateIncident(id: string, patch: Partial<ClosureIncident>) {
+      const i = this.incidents.find((x) => x.id === id)
+      if (i) Object.assign(i, patch)
+    },
+    resolveIncident(id: string, endHM: string, note: string) {
+      const i = this.incidents.find((x) => x.id === id)
+      if (!i) return
+      i.status = 'resolved'
+      i.end = endHM
+      i.resolvedAt = this.nowISO
+      i.resolvedNote = note
+    },
+    /** 闭展结束：恢复展厅（解除维护登记） */
+    reopenHall(hallId: string) {
+      this.clearMaintenance(hallId)
+    },
+    setWarning(w: HallWarning) {
+      const i = this.warnings.findIndex((x) => x.hallId === w.hallId)
+      if (i >= 0) this.warnings.splice(i, 1, w)
+      else this.warnings.push(w)
+    },
+    clearWarning(hallId: string) {
+      this.warnings = this.warnings.filter((w) => w.hallId !== hallId)
     },
 
     /** 从在库设备中取 n 台，返回设备编码（不足时返回全部可用） */
@@ -134,6 +182,8 @@ export const useMuseumStore = defineStore('museum', {
         headsets: seedHeadsets(),
         maintenance: {},
         extraLoad: { h2: 28, h5: 10 },
+        incidents: seedIncidents(),
+        warnings: [],
         nowHM: hmOfISO('2026-10-01T10:25:00'),
       })
     },
@@ -141,6 +191,6 @@ export const useMuseumStore = defineStore('museum', {
 
   persist: {
     key: 'museum-world',
-    pick: ['maintenance', 'extraLoad', 'nowHM', 'headsets'],
+    pick: ['maintenance', 'extraLoad', 'nowHM', 'headsets', 'incidents', 'warnings'],
   },
 })

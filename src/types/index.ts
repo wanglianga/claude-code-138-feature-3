@@ -12,6 +12,7 @@ export type ReservationStatus =
   | 'completed' // 已离馆
   | 'rejected' // 馆方驳回
   | 'cancelled' // 预约方取消
+  | 'rescheduled' // 闭展等原因改期待约
 
 export const STATUS_LABEL: Record<ReservationStatus, string> = {
   submitted: '待确认',
@@ -21,6 +22,7 @@ export const STATUS_LABEL: Record<ReservationStatus, string> = {
   completed: '已离馆',
   rejected: '已驳回',
   cancelled: '已取消',
+  rescheduled: '改期待约',
 }
 
 export const GROUP_TYPE_LABEL: Record<GroupType, string> = {
@@ -81,6 +83,15 @@ export type EventKind =
   | 'satisfaction'
   | 'complete'
   | 'complaint'
+  // —— 临时闭展分流 ——
+  | 'closure_incident' // 登记设备故障闭展
+  | 'closure_update' // 闭展进展/结束更新
+  | 'closure_notify' // 批量通知联系人
+  | 'closure_guide' // 讲解重点同步讲解员
+  | 'closure_guide_read' // 讲解员确认已读
+  | 'switch_theme' // 更换讲解主题
+  | 'partial_refund' // 部分退款
+  | 'reschedule' // 改期
 
 export interface TimelineEvent {
   id: string
@@ -159,6 +170,14 @@ export interface Reservation {
   complaint?: string
   complaintReply?: string
 
+  // —— 临时闭展分流 ——
+  /** 同步给本团讲解员的讲解重点 */
+  briefings?: GuideBriefing[]
+  /** 部分退款流水 */
+  refunds?: RefundRecord[]
+  /** 改期后的新预约到馆时间（ISO） */
+  rescheduledTo?: string
+
   timeline: TimelineEvent[]
 }
 
@@ -218,4 +237,106 @@ export interface SecurityLane {
   name: string
   perSlot: number // 每 15 分钟可检人数
   accessibleOnly?: boolean
+}
+
+/* ============================================================
+   临时闭展分流（设备故障）
+   ============================================================ */
+
+export type ClosureStatus = 'active' | 'resolved'
+
+/** 联系人通知 */
+export interface ClosureNotice {
+  id: string
+  at: string // ISO
+  contactName: string
+  contactPhone: string
+  channel: 'phone' | 'sms' | 'im' // 电话 / 短信 / 工作群
+  by: string
+  result: 'pending' | 'delivered' // 待确认 / 已送达
+}
+
+/** 讲解员讲解重点同步与已读 */
+export interface GuideBriefing {
+  id: string
+  incidentId: string
+  guideId: string
+  at: string // ISO 同步时间
+  points: string[] // 新的讲解重点
+  targetHallName?: string // 替代路线重点展厅
+  readAt?: string // 讲解员确认已读时间
+}
+
+/** 团队处置单状态 */
+export type TeamPlanStatus =
+  | 'identified' // 已筛出，待处置
+  | 'notified' // 已通知联系人
+  | 'rerouted' // 接受替代路线/换主题
+  | 'refunded' // 拒绝替代路线 → 部分退款
+  | 'rescheduled' // 拒绝替代路线 → 改期
+  | 'complaint' // 拒绝替代路线 → 投诉登记
+
+/** 单个团队在一次闭展中的处置 */
+export interface ClosureTeamPlan {
+  incidentId: string
+  /** 原计划受影响站点（hallId） */
+  blockedHallId: string
+  /** 建议替代展厅（可为空，表示仅顺延） */
+  suggestedHallId?: string
+  /** 预计等待（分钟） */
+  waitMin: number
+  /** 是否可更换讲解主题（讲解员语言/能力支持） */
+  themeSwitchable: boolean
+  /** 可换主题候选 id */
+  altThemeIds: string[]
+  status: TeamPlanStatus
+  notified?: boolean
+  notifiedAt?: string
+  /** 实际接受的替代展厅（改道落地） */
+  appliedHallId?: string
+  /** 实际切换到的讲解主题 id */
+  switchedThemeId?: string
+  /** 团队是否接受替代方案 */
+  acceptedAlternative?: boolean
+  decidedAt?: string
+}
+
+/** 部分退款记录 */
+export interface RefundRecord {
+  id: string
+  incidentId: string
+  at: string
+  amount: number // 退款金额（元）
+  ratio: number // 退款比例（%）
+  reason: string
+  by: string
+}
+
+/** 展厅预警说明（闭展复盘后可挂到展厅） */
+export interface HallWarning {
+  hallId: string
+  text: string
+  setAt: string
+  by: string
+  incidentId: string
+}
+
+/** 闭展事件：某展厅设备故障临时关闭 */
+export interface ClosureIncident {
+  id: string
+  hallId: string
+  reason: string // 如：投影设备故障
+  start: string // HH:mm
+  end?: string // 预计恢复 / 实际恢复
+  declaredAt: string // ISO
+  declaredBy: string
+  status: ClosureStatus
+  resolvedAt?: string
+  resolvedNote?: string
+  /** 受影响团队处置（按预约 id 索引） */
+  plans: Record<string, ClosureTeamPlan>
+  /** 批量通知记录（跨团队汇总） */
+  notices: ClosureNotice[]
+  /** 运营复盘备注 */
+  reviewNote?: string
 }

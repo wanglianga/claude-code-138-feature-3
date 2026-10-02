@@ -131,4 +131,96 @@ describe('预约全生命周期集成', () => {
     expect(stop.state).toBe('maintenance')
     expect(museum.maintenance.h5?.reason).toBe('光影设备抢修')
   })
+
+  it('闭展分流：筛团→批量通知→接受改道→讲解重点同步与已读', () => {
+    const museum = useMuseumStore()
+    const store = useReservationsStore()
+    museum.setNow('10:25')
+    const inc = store.declareClosure(
+      { hallId: 'h5', reason: '光影投影故障', start: '10:25', expectedEnd: '11:25' },
+      '工程部 老葛',
+    )
+    const r3 = store.byId('R20261001-03')!
+    // 只有正在 h5 的儿童团被筛出
+    expect(Object.keys(inc.plans)).toEqual(['R20261001-03'])
+    const plan = inc.plans[r3.id]
+    expect(plan.waitMin).toBe(60) // 当前站，从现在 10:25 等到复开 11:25
+    expect(museum.maintenance.h5?.reason).toBe('光影投影故障')
+    expect(r3.route.find((s) => s.hallId === 'h5')?.state).toBe('maintenance')
+
+    // 批量通知
+    store.notifyClosureContacts(inc.id, [r3.id], '前台主管 沈姐')
+    expect(plan.notified).toBe(true)
+    expect(plan.status).toBe('notified')
+    expect(inc.notices).toHaveLength(1)
+    expect(r3.timeline.some((e) => e.kind === 'closure_notify')).toBe(true)
+
+    // 接受替代路线（中庭，儿童友好、容量充足）
+    store.acceptClosureAlternative(inc.id, r3.id, { targetHallId: 'courtyard', durationMin: 20 }, '沈姐')
+    expect(plan.status).toBe('rerouted')
+    expect(plan.appliedHallId).toBe('courtyard')
+    expect(r3.route.find((s) => s.hallId === 'courtyard' && s.state === 'current')).toBeTruthy()
+    expect(r3.briefings).toHaveLength(1)
+    expect(r3.briefings![0].guideId).toBe('g3')
+    expect(r3.briefings![0].points.length).toBeGreaterThan(0)
+    expect(r3.briefings![0].readAt).toBeUndefined()
+    expect(r3.timeline.some((e) => e.kind === 'closure_guide')).toBe(true)
+
+    // 讲解员端确认已读
+    store.markBriefingRead(r3.id, r3.briefings![0].id)
+    expect(r3.briefings![0].readAt).toBeTruthy()
+    expect(r3.timeline.some((e) => e.kind === 'closure_guide_read')).toBe(true)
+  })
+
+  it('闭展分流：无障碍大团可换亲子主题；拒绝替代路线按 50% 部分退款；结束闭展解除维护', () => {
+    const museum = useMuseumStore()
+    const store = useReservationsStore()
+    museum.setNow('11:05')
+    const inc = store.declareClosure(
+      { hallId: 'h2', reason: '书画展柜恒温设备故障', start: '11:05', expectedEnd: '12:00' },
+      '工程部 老葛',
+    )
+    const r4 = store.byId('R20261001-04')! // 55 人无障碍团，11:10 到二号厅
+    const plan = inc.plans[r4.id]
+    expect(plan).toBeTruthy()
+    // 何田田可讲亲子线，且亲子线展厅均无障碍可达
+    expect(plan.themeSwitchable).toBe(true)
+    expect(plan.altThemeIds).toContain('t_family')
+
+    // 拒绝 → 部分退款 50%：55 × ¥20 × 50% = ¥550
+    store.refuseClosureAlternative(inc.id, r4.id, 'refund', { refundRatio: 50 }, '沈姐')
+    expect(plan.status).toBe('refunded')
+    expect(r4.refunds).toHaveLength(1)
+    expect(r4.refunds![0].amount).toBe(550)
+    expect(r4.timeline.some((e) => e.kind === 'partial_refund' && e.amount === 550)).toBe(true)
+
+    // 结束闭展：展厅恢复、事件归档、团队时间线补 closure_update
+    store.resolveClosure(inc.id, '12:00', '恒温设备已更换', '工程部 老葛')
+    expect(museum.incidentById(inc.id)?.status).toBe('resolved')
+    expect(museum.maintenance.h2).toBeUndefined()
+    expect(r4.timeline.some((e) => e.kind === 'closure_update')).toBe(true)
+  })
+
+  it('闭展分流：团队拒绝替代路线可改期，预约状态转「改期待约」', () => {
+    const museum = useMuseumStore()
+    const store = useReservationsStore()
+    museum.setNow('10:35')
+    const inc = store.declareClosure(
+      { hallId: 'h1', reason: '海派厅照明故障', start: '10:30', expectedEnd: '11:05' },
+      '工程部 老葛',
+    )
+    const r2 = store.byId('R20261001-02')! // 英语团 10:40 进一号厅
+    expect(inc.plans[r2.id]).toBeTruthy()
+    store.refuseClosureAlternative(
+      inc.id,
+      r2.id,
+      'reschedule',
+      { rescheduleTo: '2026-10-08T10:30:00', reason: '外宾团行程冲突，要求改期' },
+      '沈姐',
+    )
+    expect(inc.plans[r2.id].status).toBe('rescheduled')
+    expect(r2.status).toBe('rescheduled')
+    expect(r2.rescheduledTo).toBe('2026-10-08T10:30:00')
+    expect(r2.timeline.some((e) => e.kind === 'reschedule')).toBe(true)
+  })
 })

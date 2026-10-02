@@ -33,7 +33,7 @@ const counts = computed(() => {
 })
 
 const FILTERS: (ReservationStatus | 'all')[] = [
-  'all', 'submitted', 'confirmed', 'arrived', 'touring', 'completed', 'rejected', 'cancelled',
+  'all', 'submitted', 'confirmed', 'arrived', 'touring', 'completed', 'rescheduled', 'rejected', 'cancelled',
 ]
 </script>
 

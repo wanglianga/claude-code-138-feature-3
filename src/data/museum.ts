@@ -243,3 +243,8 @@ export const LOST_FEE = 200
 export const MAX_GROUP_SIZE = 60
 export const LARGE_GROUP_SIZE = 35
 export const TOUR_INTERVAL_MIN = 10 // 同展厅相邻团队建议间隔
+
+/** 讲解服务费（元/人），闭展部分退款以此为基数 */
+export const TOUR_FEE_PER_PERSON = 20
+/** 闭展拒绝替代路线时的部分退款档位（%） */
+export const REFUND_RATIOS = [20, 50, 100] as const

@@ -12,6 +12,7 @@ const nav = [
   { to: '/confirm', icon: '✅', label: '预约确认台' },
   { to: '/front', icon: '🏷', label: '到馆前台' },
   { to: '/dispatch', icon: '🔀', label: '途中分流调度' },
+  { to: '/closure', icon: '🚪', label: '临时闭展分流' },
   { to: '/checkout', icon: '🎧', label: '离馆核销' },
   { to: '/trace', icon: '🔎', label: '投诉与追溯' },
 ]
